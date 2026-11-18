@@ -1,0 +1,83 @@
+name: APK derle
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter sürümü
+        run: flutter --version
+
+      - name: Platform klasörlerini oluştur
+        run: |
+          # Depoda android/ yoksa oluşturulur; varsa dokunulmaz.
+          if [ ! -d android ]; then
+            flutter create --project-name sketchmind --org com.muba14 --platforms android,ios .
+          fi
+          # Parmak izi, kamera/galeri izinleri ve minSdk 24
+          python3 tool/setup_platforms.py
+
+      - name: Paketleri indir
+        run: flutter pub get
+
+      - name: Uygulama simgesi
+        run: dart run flutter_launcher_icons
+
+      - name: Kod analizi (yalnızca gerçek hatalar durdurur)
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Testler
+        run: flutter test
+
+      # Gradle indirmelerini önbellekte tut: sonraki çalıştırmalarda Maven'e çok daha az istek gider.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('pubspec.yaml') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: APK derle
+        # Maven Central zaman zaman "429 Too Many Requests" ile geçici olarak reddediyor.
+        # Bu durumda bekleyip yeniden dener (en fazla 4 deneme).
+        run: |
+          for attempt in 1 2 3 4; do
+            if flutter build apk --release; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 4 ]; then
+              wait=$((attempt * 60))
+              echo "::warning::APK derlemesi başarısız (deneme $attempt). Muhtemelen geçici ağ hatası; ${wait} sn sonra yeniden deneniyor."
+              sleep "$wait"
+            fi
+          done
+          echo "::error::APK 4 denemede de derlenemedi."
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sketchmind-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
